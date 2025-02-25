@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
-	"strconv"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,93 +14,330 @@ import (
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
-// DB ist der Datenbankverbindungspool
+// DB ist die globale Datenbankverbindung
 var DB *gorm.DB
 
-// Init initialisiert die Datenbankverbindung und erstellt die Tabellen
-func Init(dbPath string) error {
+// InitDB initialisiert die Datenbankverbindung
+func InitDB(dbPath string) error {
 	var err error
-	
-	logrus.Info("Verbinde mit Datenbank: ", dbPath)
-	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
-	if err != nil {
-		logrus.Error("Fehler beim Verbinden zur Datenbank: ", err)
-		return err
-	}
 
-	// Automatische Migrationsdurchführung für alle Modelle
-	logrus.Info("Führe Datenbankmigrationen durch")
-	err = DB.AutoMigrate(
-		&models.Invoice{},
-		&models.InvoiceItem{},
-		&models.Supplier{},
-		&models.FileReference{},
+	// Logger für GORM konfigurieren
+	gormLogger := logger.New(
+		logrus.StandardLogger(),
+		logger.Config{
+			SlowThreshold: time.Second,     // Ab wann eine Abfrage als langsam gilt
+			LogLevel:      logger.Info,     // Log-Level
+			Colorful:      false,           // Keine Farben im CLI
+		},
 	)
+
+	// SQLite-Datenbank öffnen
+	logrus.Info("Öffne Datenbankverbindung zu: ", dbPath)
+	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: gormLogger,
+	})
 	if err != nil {
-		logrus.Error("Fehler bei der Datenbankaktualisierung: ", err)
-		return err
+		return fmt.Errorf("fehler beim Öffnen der Datenbank: %v", err)
 	}
 
-	logrus.Info("Datenbankinitialisierung erfolgreich")
+	// Auto-Migration für Datenbank-Schemen aktivieren
+	logrus.Info("Führe Datenbank-Migrationen durch...")
+	err = DB.AutoMigrate(&models.Invoice{}, &models.Supplier{}, &models.InvoiceItem{}, &models.FileReference{})
+	if err != nil {
+		return fmt.Errorf("fehler bei der Datenbank-Migration: %v", err)
+	}
+
+	logrus.Info("Datenbank erfolgreich initialisiert!")
 	return nil
 }
 
-// GetDB gibt die aktuelle Datenbankverbindung zurück
-func GetDB() *gorm.DB {
-	return DB
-}
-
-// GetAllInvoices gibt alle Rechnungen aus der Datenbank zurück
+// GetAllInvoices lädt alle Rechnungen mit zugehörigen Daten aus der Datenbank
 func GetAllInvoices() ([]models.Invoice, error) {
 	var invoices []models.Invoice
-	result := DB.Preload("Supplier").Find(&invoices)
+
+	result := DB.
+		Preload("Supplier").
+		Preload("InvoiceItems").
+		Preload("FileRefs").
+		Order("date DESC").
+		Find(&invoices)
+
 	if result.Error != nil {
-		logrus.Error("Fehler beim Abrufen der Rechnungen: ", result.Error)
 		return nil, result.Error
 	}
+
 	return invoices, nil
 }
 
-// GetInvoiceByID gibt eine Rechnung mit allen Details zurück
-func GetInvoiceByID(id uint) (*models.Invoice, error) {
-	var invoice models.Invoice
-	result := DB.Preload("Supplier").
-		Preload("InvoiceItems").
-		Preload("FileRefs").
-		First(&invoice, id)
+// GetDashboardData liefert Statistiken für das Dashboard
+func GetDashboardData() (map[string]interface{}, error) {
+	data := make(map[string]interface{})
 	
+	// Alle Rechnungen laden mit allen Beziehungen
+	var invoices []models.Invoice
+	result := DB.Preload("Supplier").Preload("InvoiceItems").Find(&invoices)
 	if result.Error != nil {
-		logrus.Error("Fehler beim Abrufen der Rechnung mit ID ", id, ": ", result.Error)
 		return nil, result.Error
 	}
 	
+	// Debug-Ausgabe der Rohwerte
+	logrus.Infof("Gefundene Rechnungen für Dashboard: %d", len(invoices))
+	
+	// Gesamtanzahl der Rechnungen
+	data["totalCount"] = len(invoices)
+	
+	// Gesamtsumme aller Rechnungen
+	var totalAmount float64
+	for _, invoice := range invoices {
+		totalAmount += invoice.TotalAmount
+	}
+	data["totalAmount"] = totalAmount
+	
+	// Aktuelle Monatsstatistik
+	currentMonth := time.Now().Month()
+	currentYear := time.Now().Year()
+	var monthlyAmount float64
+	var monthlyCount int
+	
+	for _, invoice := range invoices {
+		if invoice.Date.Month() == currentMonth && invoice.Date.Year() == currentYear {
+			monthlyAmount += invoice.TotalAmount
+			monthlyCount++
+		}
+	}
+	
+	data["currentMonthAmount"] = monthlyAmount
+	data["currentMonthCount"] = monthlyCount
+	
+	// Durchschnittlicher Rechnungsbetrag
+	var averageAmount float64
+	if len(invoices) > 0 {
+		averageAmount = totalAmount / float64(len(invoices))
+	}
+	data["averageAmount"] = averageAmount
+	
+	// Größte Rechnung
+	var maxAmount float64
+	var maxInvoice models.Invoice
+	for _, invoice := range invoices {
+		if invoice.TotalAmount > maxAmount {
+			maxAmount = invoice.TotalAmount
+			maxInvoice = invoice
+		}
+	}
+	data["maxAmount"] = maxAmount
+	if maxAmount > 0 {
+		data["maxInvoiceSupplier"] = maxInvoice.Supplier.Name
+		data["maxInvoiceDate"] = maxInvoice.Date
+	}
+	
+	// Top 5 Lieferanten nach Gesamtbetrag
+	type SupplierSummary struct {
+		Name   string
+		Amount float64
+		Count  int
+	}
+	
+	supplierMap := make(map[uint]*SupplierSummary)
+	
+	for _, invoice := range invoices {
+		if _, ok := supplierMap[invoice.SupplierID]; !ok {
+			supplierMap[invoice.SupplierID] = &SupplierSummary{
+				Name: invoice.Supplier.Name,
+			}
+		}
+		supplierMap[invoice.SupplierID].Amount += invoice.TotalAmount
+		supplierMap[invoice.SupplierID].Count++
+	}
+	
+	var topSuppliers []SupplierSummary
+	for _, summary := range supplierMap {
+		topSuppliers = append(topSuppliers, *summary)
+	}
+	
+	// Nach Betrag sortieren
+	sort.Slice(topSuppliers, func(i, j int) bool {
+		return topSuppliers[i].Amount > topSuppliers[j].Amount
+	})
+	
+	// Nur die Top 5 behalten
+	if len(topSuppliers) > 5 {
+		topSuppliers = topSuppliers[:5]
+	}
+	
+	data["topSuppliers"] = topSuppliers
+	
+	// Monatliche Statistiken für die letzten 12 Monate
+	monthlyStats := make(map[string]float64)
+	now := time.Now()
+	
+	// Iteriere über die letzten 12 Monate
+	for i := 0; i < 12; i++ {
+		targetMonth := now.AddDate(0, -i, 0)
+		monthKey := targetMonth.Format("01/2006") // MM/YYYY
+		monthlyStats[monthKey] = 0
+	}
+	
+	// Summiere die Beträge pro Monat
+	for _, invoice := range invoices {
+		monthKey := invoice.Date.Format("01/2006")
+		if _, exists := monthlyStats[monthKey]; exists {
+			monthlyStats[monthKey] += invoice.TotalAmount
+		}
+	}
+	
+	data["monthlyStats"] = monthlyStats
+	
+	return data, nil
+}
+
+// GetInvoiceByID lädt eine Rechnung anhand ihrer ID
+func GetInvoiceByID(id uint) (*models.Invoice, error) {
+	var invoice models.Invoice
+
+	result := DB.
+		Preload("Supplier").
+		Preload("InvoiceItems").
+		Preload("FileRefs").
+		First(&invoice, id)
+
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
 	return &invoice, nil
 }
 
-// SaveInvoice speichert eine erkannte Rechnung in der Datenbank
-func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
-	// Debug-Ausgaben
-	logrus.WithFields(logrus.Fields{
-		"date":         date,
-		"amount":       amount,
-		"supplierName": supplierName,
-		"filePath":     filePath,
-	}).Info("Speichere Rechnung")
+// UpdateInvoice aktualisiert eine bestehende Rechnung
+func UpdateInvoice(invoice *models.Invoice) error {
+	// Transaktion starten
+	tx := DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
 
-	// OCR-Ergebnis für die Positionsextraktion
-	ocrResult := ocr.OCRResult{
-		FullText:     fullText,
-		PossibleDate: date,
-		PossibleSum:  amount,
-		Supplier:     supplierName,
-		LineItems:    ocr.ExtractLineItems(fullText),
+	// Suche existierende Rechnung
+	var existingInvoice models.Invoice
+	if err := tx.First(&existingInvoice, invoice.ID).Error; err != nil {
+		tx.Rollback()
+		return err
 	}
-	// Validierung
-	if date == "" || amount == "" || supplierName == "" {
-		return errors.New("Datum, Betrag und Lieferant sind Pflichtfelder")
+
+	// Aktualisiere die Lieferanten-Daten, falls sie geändert wurden
+	var supplier models.Supplier
+	if err := tx.First(&supplier, invoice.Supplier.ID).Error; err == nil {
+		supplier.Name = invoice.Supplier.Name
+		supplier.Address = invoice.Supplier.Address
+		if err := tx.Save(&supplier).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	} else {
+		// Lieferant existiert nicht, erstelle einen neuen
+		supplier = invoice.Supplier
+		supplier.ID = 0 // Setze ID zurück, damit ein neuer Eintrag erstellt wird
+		if err := tx.Create(&supplier).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+		
+		// Setze die neue Lieferanten-ID für die Rechnung
+		invoice.SupplierID = supplier.ID
 	}
+
+	// Lösche bestehende Rechnungspositionen
+	if err := tx.Where("invoice_id = ?", invoice.ID).Delete(&models.InvoiceItem{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Speichere aktualisierte Rechnung
+	if err := tx.Save(invoice).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Speichere Rechnungspositionen neu
+	for i := range invoice.InvoiceItems {
+		// Stelle sicher, dass die Rechungs-ID korrekt gesetzt ist
+		invoice.InvoiceItems[i].InvoiceID = invoice.ID
+		// Reset PrimaryKey für Neuanlage
+		invoice.InvoiceItems[i].ID = 0
+		
+		if err := tx.Create(&invoice.InvoiceItems[i]).Error; err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+
+	// Transaktion abschließen
+	return tx.Commit().Error
+}
+
+// DeleteInvoice löscht eine Rechnung und alle zugehörigen Daten
+func DeleteInvoice(id uint) error {
+	// Transaktion starten
+	tx := DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Lösche Rechnungspositionen
+	if err := tx.Where("invoice_id = ?", id).Delete(&models.InvoiceItem{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Lösche Dateireferenzen
+	if err := tx.Where("invoice_id = ?", id).Delete(&models.FileReference{}).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Lösche die Rechnung selbst
+	if err := tx.Delete(&models.Invoice{}, id).Error; err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	// Transaktion abschließen
+	return tx.Commit().Error
+}
+
+// SaveInvoiceFromOCR speichert eine Rechnung basierend auf OCR-Ergebnissen
+func SaveInvoiceFromOCR(ocrResult *ocr.OCRResult, filePath string) error {
+	if ocrResult == nil {
+		return errors.New("OCR-Ergebnis ist nil")
+	}
+
+	// Extrahiere die wichtigsten Informationen aus dem OCR-Ergebnis
+	supplierName := ocrResult.Supplier
+	if supplierName == "" {
+		supplierName = "Unbekannter Lieferant"
+	}
+
+	date := ocrResult.PossibleDate
+	if date == "" {
+		date = time.Now().Format("02.01.2006")
+	}
+
+	amount := ocrResult.PossibleSum
+	if amount == "" {
+		amount = "0.00"
+	}
+
+	// Debug-Ausgaben
+	logrus.Infof("Speichere Rechnung mit folgenden Daten:")
+	logrus.Infof("Lieferant: %s", supplierName)
+	logrus.Infof("Datum: %s", date)
+	logrus.Infof("Betrag: %s", amount)
 
 	// Parse des Datums (flexible Formate zulassen)
 	parsedDate, err := parseDate(date)
@@ -196,13 +433,16 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 				totalPrice = unitPrice * quantity
 			}
 			
-			// Erstelle Rechnungsposition
+			// Erstelle Rechnungsposition mit Original-Strings aus OCR
 			invoiceItem := models.InvoiceItem{
-				InvoiceID:   invoice.ID,
-				Description: lineItem.Description,
-				Quantity:    quantity,
-				SinglePrice: unitPrice,
-				TotalPrice:  totalPrice,
+				InvoiceID:      invoice.ID,
+				Description:    lineItem.Description,
+				Quantity:       quantity,
+				QuantityStr:    lineItem.Quantity,
+				SinglePrice:    unitPrice,
+				SinglePriceStr: lineItem.UnitPrice,
+				TotalPrice:     totalPrice,
+				TotalPriceStr:  lineItem.TotalPrice,
 			}
 			
 			logrus.Infof("Speichere Position: %+v", invoiceItem)
@@ -216,11 +456,14 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 		logrus.Info("Keine LineItems gefunden, erstelle Standardposition")
 		// Fallback: Erstelle eine Standardposition, wenn keine Positionen erkannt wurden
 		invoiceItem := models.InvoiceItem{
-			InvoiceID:   invoice.ID,
-			Description: fmt.Sprintf("Artikel aus Rechnung vom %s", date),
-			Quantity:    1.0,
-			SinglePrice: parsedAmount,
-			TotalPrice:  parsedAmount,
+			InvoiceID:      invoice.ID,
+			Description:    fmt.Sprintf("Artikel aus Rechnung vom %s", date),
+			Quantity:       1.0,
+			QuantityStr:    "1",
+			SinglePrice:    parsedAmount,
+			SinglePriceStr: amount,
+			TotalPrice:     parsedAmount,
+			TotalPriceStr:  amount,
 		}
 
 		if err := tx.Create(&invoiceItem).Error; err != nil {
@@ -302,13 +545,48 @@ func parseAmount(amountStr string) (float64, error) {
 		logrus.Debugf("Nach Korrektur mehrerer Punkte: '%s'", sanitized)
 	}
 	
-	// Parse als float64
-	result, err := strconv.ParseFloat(sanitized, 64)
+	// Parse Float
+	value, err := parseFloat(sanitized)
 	if err != nil {
-		logrus.Warnf("Fehler beim Parsen des Betrags '%s': %s", sanitized, err)
 		return 0.0, err
 	}
 	
-	logrus.Debugf("Erfolgreich geparst: %.2f", result)
-	return result, nil
+	logrus.Debugf("Parsed Amount: %.2f", value)
+	return value, nil
+}
+
+// parseFloat ist eine Hilfsfunktion zum Parsen von Fließkommazahlen
+func parseFloat(s string) (float64, error) {
+	// Versuche direkt zu parsen
+	value, err := parseStringToFloat(s)
+	if err == nil {
+		return value, nil
+	}
+	
+	// Entferne weitere Formatierungen, z.B. bei 1.234.567,89
+	s = cleanupNumberFormat(s)
+	
+	// Versuche erneut zu parsen
+	return parseStringToFloat(s)
+}
+
+// parseStringToFloat konvertiert einen String in eine Gleitkommazahl
+func parseStringToFloat(s string) (float64, error) {
+	var result float64
+	_, err := fmt.Sscanf(s, "%f", &result)
+	return result, err
+}
+
+// cleanupNumberFormat bereinigt Zahlenformate weiter
+func cleanupNumberFormat(s string) string {
+	// Zähle die Punkte
+	dotCount := strings.Count(s, ".")
+	
+	// Wenn mehrere Punkte, entferne alle bis auf den letzten (dieser wird als Dezimaltrenner interpretiert)
+	if dotCount > 1 {
+		lastDotPos := strings.LastIndex(s, ".")
+		s = strings.ReplaceAll(s[:lastDotPos], ".", "") + s[lastDotPos:]
+	}
+	
+	return s
 }

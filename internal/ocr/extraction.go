@@ -142,8 +142,8 @@ func removeKeywords(line string, keywords []string) string {
 	return result
 }
 
-// min gibt das Minimum zweier Ganzzahlen zurück
-func min(a, b int) int {
+// minInt gibt das Minimum zweier Ganzzahlen zurück
+func minInt(a, b int) int {
 	if a < b {
 		return a
 	}

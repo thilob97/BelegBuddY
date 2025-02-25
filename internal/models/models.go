@@ -25,11 +25,14 @@ type Invoice struct {
 // InvoiceItem repräsentiert eine Position auf der Rechnung
 type InvoiceItem struct {
 	gorm.Model
-	InvoiceID    uint
-	Description  string
-	Quantity     float64
-	SinglePrice  float64
-	TotalPrice   float64
+	InvoiceID      uint
+	Description    string
+	Quantity       float64
+	QuantityStr    string    // Speicherung des Original-Strings aus OCR
+	SinglePrice    float64
+	SinglePriceStr string    // Speicherung des Original-Strings aus OCR
+	TotalPrice     float64
+	TotalPriceStr  string    // Speicherung des Original-Strings aus OCR
 }
 
 // Supplier repräsentiert einen Lieferanten

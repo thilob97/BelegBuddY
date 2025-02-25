@@ -16,6 +16,8 @@ type Config struct {
 
 	// OCR-Optionen
 	TesseractLang  string
+	OCRProvider    string // "tesseract" oder "claude"
+	ClaudeAPIKey   string
 	
 	// UI-Optionen
 	DefaultTheme   string
@@ -49,6 +51,8 @@ func DefaultConfig() *Config {
 		DatabasePath:  filepath.Join(appDir, "belegbuddy.db"),
 		UploadsDir:    filepath.Join(appDir, "uploads"),
 		TesseractLang: "deu",
+		OCRProvider:   "tesseract", // Standard: lokales Tesseract OCR
+		ClaudeAPIKey:  "",          // Muss vom Benutzer eingerichtet werden
 		DefaultTheme:  "light",
 		WindowWidth:   1024,
 		WindowHeight:  768,

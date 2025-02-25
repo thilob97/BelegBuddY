@@ -1,6 +1,8 @@
 package app
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -23,11 +25,24 @@ func New() *App {
 	// Konfiguration initialisieren
 	cfg := config.DefaultConfig()
 	
+	// Konfigurationsdatei laden, falls vorhanden
+	configPath := filepath.Join(cfg.AppDir, "config.json")
+	if _, err := os.Stat(configPath); err == nil {
+		if file, err := os.Open(configPath); err == nil {
+			defer file.Close()
+			if err := json.NewDecoder(file).Decode(cfg); err != nil {
+				logrus.Warn("Fehler beim Laden der Konfigurationsdatei: ", err)
+			} else {
+				logrus.Info("Konfiguration aus Datei geladen: ", configPath)
+			}
+		}
+	}
+	
 	// Logging einrichten
 	setupLogging(cfg)
 
 	// Datenbank initialisieren
-	if err := db.Init(cfg.DatabasePath); err != nil {
+	if err := db.InitDB(cfg.DatabasePath); err != nil {
 		logrus.Fatal("Fehler beim Initialisieren der Datenbank: ", err)
 	}
 
@@ -60,7 +75,9 @@ func setupLogging(cfg *config.Config) {
 		logrus.Fatal("Fehler beim Öffnen der Logdatei: ", err)
 	}
 
-	logrus.SetOutput(file)
+	// Multi-Writer für Log-Ausgabe sowohl in Datei als auch auf Konsole
+	mw := io.MultiWriter(os.Stdout, file)
+	logrus.SetOutput(mw)
 	logrus.SetLevel(logrus.InfoLevel)
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,

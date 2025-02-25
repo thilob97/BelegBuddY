@@ -1,6 +1,8 @@
 package views
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/widget"
+	"github.com/belegbuddy/belegbuddy/internal/config"
 	"github.com/belegbuddy/belegbuddy/internal/ocr"
 	"github.com/belegbuddy/belegbuddy/ui/components"
 	"github.com/sirupsen/logrus"
@@ -31,6 +34,11 @@ func NewUploadView(window fyne.Window, uploadsDir string, callbacks UploadViewCa
 	progress := widget.NewProgressBar()
 	progress.Hide()
 	
+	// OCR-Methode auswählen
+	ocrMethodLabel := widget.NewLabelWithStyle("OCR-Methode:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	ocrMethodSelect := widget.NewSelect([]string{"Tesseract (lokal)", "Claude AI"}, nil)
+	ocrMethodSelect.SetSelected("Tesseract (lokal)")
+	
 	// Funktion für das Verarbeiten einer Datei
 	processFile := func(filePath string) {
 		// Status aktualisieren
@@ -39,11 +47,36 @@ func NewUploadView(window fyne.Window, uploadsDir string, callbacks UploadViewCa
 		
 		// OCR-Verarbeitung starten
 		go func() {
-			progressDialog := dialog.NewProgress("Verarbeite Dokument", "OCR-Verarbeitung läuft...", window)
+			// Ausgewählte OCR-Methode ermitteln
+			useClaudeOCR := ocrMethodSelect.Selected == "Claude AI"
+			
+			progressDialog := dialog.NewProgress("Verarbeite Dokument", 
+				fmt.Sprintf("OCR-Verarbeitung mit %s läuft...", ocrMethodSelect.Selected), window)
 			progressDialog.Show()
 			
-			// OCR durchführen
-			result, err := ocr.ProcessFile(filePath, "deu") // Sprache sollte konfigurierbar sein
+			var result *ocr.OCRResult
+			var err error
+			
+			// Je nach ausgewählter Methode verarbeiten
+			if useClaudeOCR {
+				// Config auslesen
+				appConfig := &config.Config{}
+				configFilePath := filepath.Join(uploadsDir, "..", "config.json")
+				if fileData, err := os.ReadFile(configFilePath); err == nil {
+					json.Unmarshal(fileData, appConfig)
+				}
+				
+				// API-Key prüfen
+				if appConfig.ClaudeAPIKey == "" {
+					err = errors.New("Claude API-Schlüssel nicht konfiguriert. Bitte in den Einstellungen hinterlegen")
+				} else {
+					// Claude API verwenden
+					result, err = ocr.ProcessWithClaude(filePath, appConfig.ClaudeAPIKey)
+				}
+			} else {
+				// Tesseract OCR verwenden
+				result, err = ocr.ProcessFile(filePath, "deu") // Sprache könnte aus Config kommen
+			}
 			
 			// Dialog schließen
 			progressDialog.Hide()
@@ -117,6 +150,12 @@ func NewUploadView(window fyne.Window, uploadsDir string, callbacks UploadViewCa
 	
 	dropArea := components.DragDropArea(handleFileDrop)
 	
+	// OCR-Methoden-Selector
+	ocrMethodContainer := container.NewHBox(
+		ocrMethodLabel,
+		ocrMethodSelect,
+	)
+	
 	// Layout zusammenstellen
 	statusContainer := container.NewVBox(
 		statusLabel,
@@ -124,7 +163,7 @@ func NewUploadView(window fyne.Window, uploadsDir string, callbacks UploadViewCa
 	)
 	
 	return container.NewBorder(
-		nil, 
+		ocrMethodContainer, 
 		container.NewVBox(
 			container.NewCenter(uploadButton),
 			statusContainer,

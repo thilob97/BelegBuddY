@@ -76,6 +76,7 @@ func ProcessFile(filePath string, language string) (*OCRResult, error) {
 		PossibleDate: extractDate(text),
 		PossibleSum: extractAmount(text),
 		Supplier: extractSupplier(text),
+		LineItems: ExtractLineItems(text),
 	}
 
 	logrus.Info("OCR-Verarbeitung abgeschlossen für: ", filePath)
