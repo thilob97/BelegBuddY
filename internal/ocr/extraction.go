@@ -33,6 +33,13 @@ func extractDate(text string) string {
 
 // extractAmount versucht einen Geldbetrag im Text zu finden
 func extractAmount(text string) string {
+	// Spezifischer Summenausdruck für die gegebene Rechnung
+	sumPattern := regexp.MustCompile("SUMME\\s+(\\d+[,\\.]\\d+)")
+	matches := sumPattern.FindStringSubmatch(text)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+	
 	// Typische deutsche Geldbetragsformate mit Komma
 	// Matches: 123,45€, 123,45 €, EUR 123,45, 123.45 EUR usw.
 	amountPattern := regexp.MustCompile("\\b(\\d{1,3}(?:\\.\\d{3})*|\\d+),\\d{2}\\s*(?:€|EUR|Euro)?|\\b(?:€|EUR|Euro)\\s*(\\d{1,3}(?:\\.\\d{3})*|\\d+),\\d{2}\\b")
@@ -53,7 +60,7 @@ func extractAmount(text string) string {
 	}
 	
 	// Falls nichts gefunden wurde, suche im gesamten Text
-	matches := amountPattern.FindStringSubmatch(text)
+	matches = amountPattern.FindStringSubmatch(text)
 	if len(matches) > 0 {
 		for _, match := range matches {
 			if match != "" {
