@@ -206,7 +206,12 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 	detailContainer.RemoveAll()
 	
 	if invoiceID == 0 {
-		detailContainer.Add(widget.NewLabel("Keine Rechnung ausgewählt"))
+		message := widget.NewLabelWithStyle(
+			"Keine Rechnung ausgewählt",
+			fyne.TextAlignCenter,
+			fyne.TextStyle{Italic: true},
+		)
+		detailContainer.Add(container.NewCenter(message))
 		detailContainer.Refresh()
 		return
 	}
@@ -214,7 +219,12 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 	// Lade die Rechnungsdetails aus der Datenbank
 	invoice, err := db.GetInvoiceByID(invoiceID)
 	if err != nil {
-		detailContainer.Add(widget.NewLabel("Fehler beim Laden der Rechnungsdetails: " + err.Error()))
+		errorMsg := widget.NewLabelWithStyle(
+			"Fehler beim Laden der Rechnungsdetails: "+err.Error(),
+			fyne.TextAlignCenter,
+			fyne.TextStyle{Bold: true},
+		)
+		detailContainer.Add(container.NewCenter(errorMsg))
 		detailContainer.Refresh()
 		return
 	}
@@ -222,8 +232,14 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 	// Hauptinfos anzeigen
 	title := widget.NewLabelWithStyle(
 		fmt.Sprintf("Rechnung #%d - %s", invoice.ID, invoice.Supplier.Name),
-		fyne.TextAlignLeading,
+		fyne.TextAlignCenter,
 		fyne.TextStyle{Bold: true},
+	)
+	
+	// ---- Abschnitt: Allgemeine Informationen ----
+	infoSection := container.NewVBox(
+		widget.NewLabelWithStyle("Allgemeine Informationen", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
 	)
 	
 	// Infokarte mit allgemeinen Daten
@@ -239,12 +255,15 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 		
 		widget.NewLabelWithStyle("Fälligkeitsdatum:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		widget.NewLabel(invoice.DueDate.Format("02.01.2006")),
-		
+	)
+	
+	// Betragsinfos
+	amountsGrid := container.NewGridWithColumns(2,
 		widget.NewLabelWithStyle("Gesamtbetrag:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(formatAmount(invoice.TotalAmount)),
+		widget.NewLabelWithStyle(formatAmount(invoice.TotalAmount), fyne.TextAlignTrailing, fyne.TextStyle{Bold: true}),
 		
 		widget.NewLabelWithStyle("MwSt-Betrag:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		widget.NewLabel(formatAmount(invoice.VatAmount)),
+		widget.NewLabelWithStyle(formatAmount(invoice.VatAmount), fyne.TextAlignTrailing, fyne.TextStyle{}),
 		
 		widget.NewLabelWithStyle("Status:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		widget.NewLabel(invoice.Status),
@@ -253,11 +272,19 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 		widget.NewLabel(invoice.Category),
 	)
 	
-	// Rechnungspositionen als Tabelle
-	var itemsTable *widget.Table
+	infoSection.Add(container.NewPadded(infoGrid))
+	infoSection.Add(widget.NewSeparator())
+	infoSection.Add(container.NewPadded(amountsGrid))
 	
+	// ---- Abschnitt: Rechnungspositionen ----
+	positionsSection := container.NewVBox(
+		widget.NewLabelWithStyle("Rechnungspositionen", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+	)
+	
+	// Rechnungspositionen als Tabelle
 	if len(invoice.InvoiceItems) > 0 {
-		itemsTable = widget.NewTable(
+		itemsTable := widget.NewTable(
 			// Anzahl Zeilen und Spalten
 			func() (int, int) {
 				return len(invoice.InvoiceItems) + 1, 4 // +1 für Kopfzeile
@@ -273,6 +300,8 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 				// Kopfzeile
 				if id.Row == 0 {
 					label.TextStyle = fyne.TextStyle{Bold: true}
+					label.Alignment = fyne.TextAlignCenter
+					
 					switch id.Col {
 					case 0:
 						label.SetText("Beschreibung")
@@ -288,15 +317,20 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 				
 				// Inhalt
 				item := invoice.InvoiceItems[id.Row-1]
+				
 				switch id.Col {
 				case 0:
 					label.SetText(item.Description)
+					label.Alignment = fyne.TextAlignLeading
 				case 1:
 					label.SetText(fmt.Sprintf("%.2f", item.Quantity))
+					label.Alignment = fyne.TextAlignTrailing
 				case 2:
 					label.SetText(formatAmount(item.SinglePrice))
+					label.Alignment = fyne.TextAlignTrailing
 				case 3:
 					label.SetText(formatAmount(item.TotalPrice))
+					label.Alignment = fyne.TextAlignTrailing
 				}
 			},
 		)
@@ -306,63 +340,91 @@ func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
 		itemsTable.SetColumnWidth(1, 80)
 		itemsTable.SetColumnWidth(2, 120)
 		itemsTable.SetColumnWidth(3, 120)
+		
+		positionsSection.Add(container.NewPadded(itemsTable))
 	} else {
-		itemsTable = nil
+		noItemsLabel := widget.NewLabelWithStyle(
+			"Keine Rechnungspositionen vorhanden", 
+			fyne.TextAlignCenter, 
+			fyne.TextStyle{Italic: true},
+		)
+		positionsSection.Add(container.NewPadded(noItemsLabel))
 	}
 	
-	// Dateireferenzen
-	var fileInfos []string
-	for _, fileRef := range invoice.FileRefs {
-		fileInfos = append(fileInfos, fileRef.Filename)
+	// ---- Abschnitt: Dateien ----
+	filesSection := container.NewVBox(
+		widget.NewLabelWithStyle("Zugehörige Dateien", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+	)
+	
+	if len(invoice.FileRefs) > 0 {
+		filesList := container.NewVBox()
+		
+		for _, fileRef := range invoice.FileRefs {
+			fileItem := container.NewHBox(
+				widget.NewIcon(theme.FileIcon()),
+				widget.NewLabel(fileRef.Filename),
+			)
+			filesList.Add(fileItem)
+		}
+		
+		filesSection.Add(container.NewPadded(filesList))
+	} else {
+		noFilesLabel := widget.NewLabelWithStyle(
+			"Keine Dateien vorhanden", 
+			fyne.TextAlignCenter, 
+			fyne.TextStyle{Italic: true},
+		)
+		filesSection.Add(container.NewPadded(noFilesLabel))
 	}
 	
-	// Aktionen
+	// ---- Abschnitt: Aktionen ----
+	actionsSection := container.NewVBox(
+		widget.NewLabelWithStyle("Aktionen", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
+		widget.NewSeparator(),
+	)
+	
+	// Aktions-Buttons
+	editButton := widget.NewButtonWithIcon("Bearbeiten", theme.DocumentCreateIcon(), func() {
+		logrus.Info("Rechnung mit ID ", invoice.ID, " soll bearbeitet werden")
+	})
+	editButton.Importance = widget.HighImportance
+	
 	deleteButton := widget.NewButtonWithIcon("Löschen", theme.DeleteIcon(), func() {
-		// Bestätigungsdialog mit Fenster-Kontext
 		dialog.ShowConfirm(
 			"Rechnung löschen",
 			"Möchten Sie die Rechnung wirklich löschen?",
 			func(confirm bool) {
 				if confirm {
-					// TODO: Implementierung zum Löschen der Rechnung
 					logrus.Info("Rechnung mit ID ", invoice.ID, " soll gelöscht werden")
 				}
 			},
 			fyne.CurrentApp().Driver().AllWindows()[0],
 		)
 	})
-	
-	editButton := widget.NewButtonWithIcon("Bearbeiten", theme.DocumentCreateIcon(), func() {
-		// TODO: Implementierung zum Bearbeiten der Rechnung
-		logrus.Info("Rechnung mit ID ", invoice.ID, " soll bearbeitet werden")
-	})
+	deleteButton.Importance = widget.MediumImportance
 	
 	actionsContainer := container.NewHBox(
-		editButton,
-		deleteButton,
+		container.NewPadded(editButton),
+		container.NewPadded(deleteButton),
 	)
 	
-	// Zusammenstellen der Komponenten
-	detailContainer.Add(title)
-	detailContainer.Add(widget.NewSeparator())
-	detailContainer.Add(container.NewPadded(infoGrid))
+	actionsSection.Add(container.NewCenter(actionsContainer))
 	
-	if len(invoice.InvoiceItems) > 0 {
-		detailContainer.Add(widget.NewLabelWithStyle("Rechnungspositionen:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
-		detailContainer.Add(container.NewPadded(itemsTable))
-	} else {
-		detailContainer.Add(widget.NewLabelWithStyle("Keine Rechnungspositionen vorhanden", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}))
-	}
+	// Zusammenstellen aller Komponenten
+	scrollContainer := container.NewVScroll(container.NewVBox(
+		container.NewPadded(title),
+		widget.NewSeparator(),
+		infoSection,
+		widget.NewSeparator(),
+		positionsSection,
+		widget.NewSeparator(),
+		filesSection,
+		widget.NewSeparator(),
+		actionsSection,
+	))
 	
-	if len(fileInfos) > 0 {
-		detailContainer.Add(widget.NewLabelWithStyle("Dateien:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
-		for _, fileInfo := range fileInfos {
-			detailContainer.Add(widget.NewLabel(fileInfo))
-		}
-	}
-	
-	detailContainer.Add(widget.NewSeparator())
-	detailContainer.Add(actionsContainer)
+	detailContainer.Add(scrollContainer)
 	
 	// Container aktualisieren
 	detailContainer.Refresh()

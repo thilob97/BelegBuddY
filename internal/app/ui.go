@@ -71,46 +71,43 @@ func buildMainMenu(a *App) *fyne.MainMenu {
 
 // showOCRResultDialog zeigt einen Dialog mit den OCR-Ergebnissen an
 func showOCRResultDialog(a *App, result *ocr.OCRResult, filePath string) {
-	// OCR-Ergebnis-Dialog anzeigen
-	textEntry := widget.NewMultiLineEntry()
-	textEntry.SetText(result.FullText)
-	textEntry.SetMinRowsVisible(10)
-	
-	// Extrahierte Daten anzeigen
-	dateEntry := widget.NewEntry()
-	dateEntry.SetText(result.PossibleDate)
-	
-	amountEntry := widget.NewEntry()
-	amountEntry.SetText(result.PossibleSum)
-	
-	supplierEntry := widget.NewEntry()
-	supplierEntry.SetText(result.Supplier)
-	
 	// Titel für den Dialog
 	title := "OCR-Ergebnis"
 	if result.IsDemo {
 		title = "Demo-Beispiel Ergebnis"
 	}
-	
-	// Info-Label
+
+	// Info-Label mit Statustext
 	infoLabel := widget.NewLabel("OCR-Verarbeitung abgeschlossen")
 	if result.IsDemo {
 		infoLabel.SetText("Demo-Beispiel: Dies sind künstlich generierte Daten für Testzwecke")
 	}
+	infoLabel.Alignment = fyne.TextAlignCenter
+	infoLabel.TextStyle = fyne.TextStyle{Bold: true}
 	
-	// Formular für extrahierte Daten
-	extractedForm := container.NewVBox(
-		container.NewGridWithColumns(2,
-			widget.NewLabel("Datum:"),
-			dateEntry,
-			widget.NewLabel("Betrag:"),
-			amountEntry,
-			widget.NewLabel("Lieferant:"),
-			supplierEntry,
-		),
-	)
+	// Eingabefelder für extrahierte Daten
+	dateLabel := widget.NewLabelWithStyle("Datum:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	dateEntry := widget.NewEntry()
+	dateEntry.SetText(result.PossibleDate)
+	dateEntry.SetPlaceHolder("TT.MM.JJJJ")
 	
-	// Button zum Speichern
+	amountLabel := widget.NewLabelWithStyle("Betrag:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	amountEntry := widget.NewEntry()
+	amountEntry.SetText(result.PossibleSum)
+	amountEntry.SetPlaceHolder("0,00")
+	
+	supplierLabel := widget.NewLabelWithStyle("Lieferant:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	supplierEntry := widget.NewEntry()
+	supplierEntry.SetText(result.Supplier)
+	supplierEntry.SetPlaceHolder("Lieferantenname")
+	
+	// Textfeld für den erkannten Text
+	textLabel := widget.NewLabelWithStyle("Erkannter Text:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+	textEntry := widget.NewMultiLineEntry()
+	textEntry.SetText(result.FullText)
+	textEntry.SetMinRowsVisible(10)
+	
+	// Speichern-Button mit prominentem Styling
 	saveButton := widget.NewButton("In Datenbank speichern", func() {
 		err := db.SaveInvoice(
 			dateEntry.Text,
@@ -127,23 +124,52 @@ func showOCRResultDialog(a *App, result *ocr.OCRResult, filePath string) {
 		
 		dialog.ShowInformation("Erfolg", "Rechnung wurde erfolgreich in der Datenbank gespeichert", a.MainWindow)
 	})
+	saveButton.Importance = widget.HighImportance
+
+	// Formular für extrahierte Daten
+	formContent := container.NewVBox(
+		container.NewPadded(dateLabel),
+		container.NewPadded(dateEntry),
+		container.NewPadded(amountLabel),
+		container.NewPadded(amountEntry),
+		container.NewPadded(supplierLabel),
+		container.NewPadded(supplierEntry),
+		widget.NewSeparator(),
+		container.NewPadded(saveButton),
+	)
+
+	// Textbereich
+	textContent := container.NewVBox(
+		container.NewPadded(textLabel),
+		container.NewPadded(textEntry),
+	)
 	
-	// Vollständiges Layout
-	content := container.NewVBox(
-		infoLabel,
-		container.NewAppTabs(
-			container.NewTabItem("Extrahierte Daten", container.NewVBox(
-				container.NewPadded(extractedForm),
-				container.NewPadded(saveButton),
-			)),
-			container.NewTabItem("Erkannter Text", container.NewVBox(
-				container.NewPadded(textEntry),
-			)),
-		),
+	// Tabs für verschiedene Ansichten
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Rechnungsdaten", formContent),
+		container.NewTabItem("Erkannter Text", textContent),
+	)
+
+	// Überschrift mit Info-Label
+	header := container.NewVBox(
+		widget.NewSeparator(),
+		container.NewPadded(infoLabel),
+		widget.NewSeparator(),
+	)
+	
+	// Gesamtlayout
+	content := container.NewBorder(
+		header,
+		nil,
+		nil, 
+		nil,
+		tabs,
 	)
 	
 	// Dialog anzeigen
-	dialog.ShowCustom(title, "Schließen", content, a.MainWindow)
+	customDialog := dialog.NewCustom(title, "Schließen", content, a.MainWindow)
+	customDialog.Resize(fyne.NewSize(600, 500))
+	customDialog.Show()
 
 	// Log-Eintrag
 	logrus.Info("OCR-Ergebnis für Datei angezeigt: ", filePath)
