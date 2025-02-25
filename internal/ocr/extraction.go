@@ -9,7 +9,7 @@ import (
 func extractDate(text string) string {
 	// Typische deutsche Datumsformate
 	// Format: DD.MM.YYYY oder DD.MM.YY
-	datePattern := regexp.MustCompile(`\b(0[1-9]|[12][0-9]|3[01])[.](0[1-9]|1[012])[.](19|20)?\d\d\b`)
+	datePattern := regexp.MustCompile("\\b(0[1-9]|[12][0-9]|3[01])[.](0[1-9]|1[012])[.](19|20)?\\d\\d\\b")
 	
 	// Suche nach Datum mit Schlüsselwörtern in der Nähe
 	dateLines := extractLinesWithKeywords(text, []string{"datum", "date", "vom", "ausstellungsdatum", "rechnungsdatum"})
@@ -35,7 +35,7 @@ func extractDate(text string) string {
 func extractAmount(text string) string {
 	// Typische deutsche Geldbetragsformate mit Komma
 	// Matches: 123,45€, 123,45 €, EUR 123,45, 123.45 EUR usw.
-	amountPattern := regexp.MustCompile(`\b(\d{1,3}(?:\.\d{3})*|\d+),\d{2}\s*(?:€|EUR|Euro)?|\b(?:€|EUR|Euro)\s*(\d{1,3}(?:\.\d{3})*|\d+),\d{2}\b`)
+	amountPattern := regexp.MustCompile("\\b(\\d{1,3}(?:\\.\\d{3})*|\\d+),\\d{2}\\s*(?:€|EUR|Euro)?|\\b(?:€|EUR|Euro)\\s*(\\d{1,3}(?:\\.\\d{3})*|\\d+),\\d{2}\\b")
 	
 	// Suche nach Beträgen mit Schlüsselwörtern in der Nähe
 	amountLines := extractLinesWithKeywords(text, []string{"summe", "betrag", "total", "gesamtbetrag", "rechnungsbetrag", "zu zahlen"})

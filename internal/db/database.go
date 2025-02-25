@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/belegbuddy/belegbuddy/internal/models"
+	"github.com/belegbuddy/belegbuddy/internal/ocr"
 	"github.com/sirupsen/logrus"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -80,6 +81,14 @@ func GetInvoiceByID(id uint) (*models.Invoice, error) {
 
 // SaveInvoice speichert eine erkannte Rechnung in der Datenbank
 func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
+	// OCR-Ergebnis für die Positionsextraktion
+	result := ocr.OCRResult{
+		FullText:     fullText,
+		PossibleDate: date,
+		PossibleSum:  amount,
+		Supplier:     supplierName,
+		LineItems:    ocr.ExtractLineItems(fullText),
+	}
 	// Validierung
 	if date == "" || amount == "" || supplierName == "" {
 		return errors.New("Datum, Betrag und Lieferant sind Pflichtfelder")
@@ -109,13 +118,13 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 
 	// Lieferanten finden oder erstellen
 	var supplier models.Supplier
-	result := tx.Where("name = ?", supplierName).FirstOrCreate(&supplier, models.Supplier{
+	dbResult := tx.Where("name = ?", supplierName).FirstOrCreate(&supplier, models.Supplier{
 		Name: supplierName,
 	})
-	if result.Error != nil {
+	if dbResult.Error != nil {
 		tx.Rollback()
-		logrus.Error("Fehler beim Erstellen/Finden des Lieferanten: ", result.Error)
-		return result.Error
+		logrus.Error("Fehler beim Erstellen/Finden des Lieferanten: ", dbResult.Error)
+		return dbResult.Error
 	}
 
 	// Rechnung erstellen
@@ -133,20 +142,73 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 		return err
 	}
 
-	// Einfache Rechnungsposition erstellen basierend auf dem erkannten Text
-	// In einer vollständigen Implementierung würden hier Positionen aus dem Text extrahiert
-	invoiceItem := models.InvoiceItem{
-		InvoiceID:   invoice.ID,
-		Description: fmt.Sprintf("Artikel aus Rechnung vom %s", date),
-		Quantity:    1.0,
-		SinglePrice: parsedAmount,
-		TotalPrice:  parsedAmount,
-	}
+	// Konvertiere OCR LineItems in Datenbank InvoiceItems
+	if len(result.LineItems) > 0 {
+		for _, lineItem := range result.LineItems {
+			// Parse Menge und Preise
+			quantity := 1.0
+			if lineItem.Quantity != "" {
+				if q, err := parseAmount(lineItem.Quantity); err == nil {
+					quantity = q
+				}
+			}
+			
+			// Parse Einzelpreis
+			unitPrice := 0.0
+			if lineItem.UnitPrice != "" {
+				if up, err := parseAmount(lineItem.UnitPrice); err == nil {
+					unitPrice = up
+				}
+			}
+			
+			// Parse Gesamtpreis
+			totalPrice := 0.0
+			if lineItem.TotalPrice != "" {
+				if tp, err := parseAmount(lineItem.TotalPrice); err == nil {
+					totalPrice = tp
+				}
+			}
+			
+			// Wenn kein Einzelpreis aber Menge und Gesamtpreis vorhanden, berechne Einzelpreis
+			if unitPrice == 0.0 && quantity > 0 && totalPrice > 0 {
+				unitPrice = totalPrice / quantity
+			}
+			
+			// Wenn kein Gesamtpreis aber Einzelpreis und Menge vorhanden, berechne Gesamtpreis
+			if totalPrice == 0.0 && unitPrice > 0 {
+				totalPrice = unitPrice * quantity
+			}
+			
+			// Erstelle Rechnungsposition
+			invoiceItem := models.InvoiceItem{
+				InvoiceID:   invoice.ID,
+				Description: lineItem.Description,
+				Quantity:    quantity,
+				SinglePrice: unitPrice,
+				TotalPrice:  totalPrice,
+			}
+			
+			if err := tx.Create(&invoiceItem).Error; err != nil {
+				tx.Rollback()
+				logrus.Error("Fehler beim Speichern der Rechnungsposition: ", err)
+				return err
+			}
+		}
+	} else {
+		// Fallback: Erstelle eine Standardposition, wenn keine Positionen erkannt wurden
+		invoiceItem := models.InvoiceItem{
+			InvoiceID:   invoice.ID,
+			Description: fmt.Sprintf("Artikel aus Rechnung vom %s", date),
+			Quantity:    1.0,
+			SinglePrice: parsedAmount,
+			TotalPrice:  parsedAmount,
+		}
 
-	if err := tx.Create(&invoiceItem).Error; err != nil {
-		tx.Rollback()
-		logrus.Error("Fehler beim Speichern der Rechnungsposition: ", err)
-		return err
+		if err := tx.Create(&invoiceItem).Error; err != nil {
+			tx.Rollback()
+			logrus.Error("Fehler beim Speichern der Rechnungsposition: ", err)
+			return err
+		}
 	}
 
 	// Dateireferenz speichern, wenn ein Dateipfad angegeben ist
