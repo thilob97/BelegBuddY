@@ -1,0 +1,239 @@
+package ocr
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+
+	"github.com/sirupsen/logrus"
+)
+
+// ClaudeOCRResponse stellt die Antwort der Claude API dar
+type ClaudeOCRResponse struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
+}
+
+// ProcessWithClaude verarbeitet eine Datei mit der Claude API
+func ProcessWithClaude(filePath, apiKey string) (*OCRResult, error) {
+	if apiKey == "" {
+		return nil, errors.New("Claude API-Schlüssel nicht konfiguriert")
+	}
+
+	// Dateiformat prüfen und ggf. konvertieren
+	ext := strings.ToLower(filepath.Ext(filePath))
+	
+	// Bei PDF-Dateien müssen wir diese zuerst in ein Bild konvertieren
+	var imageFilePath string
+	if ext == ".pdf" {
+		// Temporäres Verzeichnis für die konvertierte Datei
+		tempDir := os.TempDir()
+		imageFilePath = filepath.Join(tempDir, "claude_temp_"+filepath.Base(filePath)+".png")
+		
+		// PDF zu Bild konvertieren mit ImageMagick (erste Seite)
+		logrus.Info("Konvertiere PDF zu Bild für Claude API: ", filePath)
+		cmd := exec.Command("convert", "-density", "300", filePath+"[0]", "-quality", "100", "-flatten", "-background", "white", imageFilePath)
+		stderr := &strings.Builder{}
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err != nil {
+			return nil, fmt.Errorf("fehler bei der Konvertierung von PDF zu Bild: %v, stderr: %s", err, stderr.String())
+		}
+		
+		// Prüfen ob die Datei existiert und eine vernünftige Größe hat
+		fileInfo, err := os.Stat(imageFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("konvertierte Bilddatei kann nicht gefunden werden: %v", err)
+		}
+		if fileInfo.Size() < 100 {
+			return nil, fmt.Errorf("konvertierte Bilddatei scheint fehlerhaft zu sein (zu klein: %d bytes)", fileInfo.Size())
+		}
+		
+		logrus.Infof("PDF erfolgreich in Bild konvertiert: %s (%d bytes)", imageFilePath, fileInfo.Size())
+		
+		// Statt PDF-Datei das Bild verwenden
+		filePath = imageFilePath
+		ext = ".png"
+		
+		// Cleanup am Ende
+		defer os.Remove(imageFilePath)
+	} else if ext != ".png" && ext != ".jpg" && ext != ".jpeg" {
+		return nil, fmt.Errorf("nicht unterstütztes Dateiformat für Claude: %s", ext)
+	}
+
+	// Datei öffnen
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("fehler beim Öffnen der Datei: %v", err)
+	}
+	defer file.Close()
+
+	// Medientyp bestimmen
+	mediaType := "image/png"
+	if ext == ".jpg" || ext == ".jpeg" {
+		mediaType = "image/jpeg"
+	} else if ext == ".pdf" {
+		mediaType = "application/pdf"
+	}
+
+	// Angepasster System-Prompt für die Rechnungsextraktion
+	prompt := `Du bist ein Buchhalter-Assistent, der Rechnungen analysiert.
+Extrahiere aus der Rechnung folgende Informationen:
+1. Lieferant/Absender (Name und Anschrift)
+2. Rechnungsdatum
+3. Rechnungsnummer
+4. Gesamtbetrag (MwSt. inkl.)
+5. Einzelne Rechnungspositionen mit Beschreibung, Menge, Einzelpreis und Gesamtpreis
+
+Formatiere das Ergebnis klar und strukturiert in folgendem Format:
+LIEFERANT: [Name des Lieferanten]
+DATUM: [Rechnungsdatum im Format TT.MM.JJJJ]
+RECHNUNGSNR: [Rechnungsnummer]
+GESAMTBETRAG: [Gesamtbetrag]
+
+POSITIONEN:
+1. [Beschreibung], [Menge] × [Einzelpreis] = [Gesamtpreis]
+2. ...
+
+Falls du einen Teil nicht identifizieren kannst, gib an, dass die Information nicht gefunden wurde.`
+
+	// Anfrage-JSON
+	requestJSON := fmt.Sprintf(`{
+		"model": "claude-3-haiku-20240307",
+		"max_tokens": 2000,
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{
+						"type": "text",
+						"text": %q
+					},
+					{
+						"type": "image",
+						"source": {
+							"type": "base64",
+							"media_type": "%s",
+							"data": ""
+						}
+					}
+				]
+			}
+		]
+	}`, prompt, mediaType)
+
+	// Datei einlesen und als base64 kodieren
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("fehler beim Lesen der Datei: %v", err)
+	}
+	
+	// Anfrage-JSON mit base64-Daten
+	base64Data := base64.StdEncoding.EncodeToString(fileData)
+	requestJSON = strings.Replace(requestJSON, `"data": ""`, fmt.Sprintf(`"data": %q`, base64Data), 1)
+	
+	// HTTP-Anfrage erstellen (direkt JSON senden, kein Multipart)
+	request, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(requestJSON))
+	if err != nil {
+		return nil, fmt.Errorf("fehler beim Erstellen der HTTP-Anfrage: %v", err)
+	}
+
+	// Header setzen
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("x-api-key", apiKey)
+	request.Header.Set("anthropic-version", "2023-06-01")
+
+	// Anfrage senden
+	client := &http.Client{}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("fehler beim Senden der Anfrage: %v", err)
+	}
+	defer response.Body.Close()
+
+	// Antwort prüfen
+	if response.StatusCode != http.StatusOK {
+		responseBody, _ := io.ReadAll(response.Body)
+		return nil, fmt.Errorf("API-Fehler (%d): %s", response.StatusCode, string(responseBody))
+	}
+
+	// Antwort verarbeiten
+	var claudeResponse ClaudeOCRResponse
+	if err := json.NewDecoder(response.Body).Decode(&claudeResponse); err != nil {
+		return nil, fmt.Errorf("fehler beim Dekodieren der API-Antwort: %v", err)
+	}
+
+	// Prüfen, ob wir eine Antwort erhalten haben
+	if len(claudeResponse.Content) == 0 || claudeResponse.Content[0].Text == "" {
+		return nil, errors.New("keine Antwort von Claude erhalten")
+	}
+
+	// Text der Antwort extrahieren
+	responseText := claudeResponse.Content[0].Text
+	logrus.Infof("Claude API Antwort erhalten: %d Zeichen", len(responseText))
+
+	// OCR-Ergebnis erstellen
+	result := &OCRResult{
+		FullText: responseText,
+		IsDemo:   false,
+	}
+
+	// Datum extrahieren
+	datePattern := regexp.MustCompile(`(?i)(?:rechnungsdatum|datum|date):\s*(\d{1,2}[.-]\d{1,2}[.-]\d{2,4})`)
+	dateMatches := datePattern.FindStringSubmatch(responseText)
+	if len(dateMatches) > 1 {
+		result.PossibleDate = dateMatches[1]
+	}
+
+	// Betrag extrahieren
+	amountPattern := regexp.MustCompile(`(?i)(?:gesamtbetrag|summe|total):\s*([0-9.]+,\d{2}|\d+[,.]\d{2})(?:\s*€|\s*EUR)?`)
+	amountMatches := amountPattern.FindStringSubmatch(responseText)
+	if len(amountMatches) > 1 {
+		result.PossibleSum = amountMatches[1]
+	}
+
+	// Lieferant extrahieren
+	supplierPattern := regexp.MustCompile(`(?i)(?:lieferant|absender|firma|company):\s*([^\n]+)`)
+	supplierMatches := supplierPattern.FindStringSubmatch(responseText)
+	if len(supplierMatches) > 1 {
+		result.Supplier = supplierMatches[1]
+	}
+
+	// Rechnungspositionen aus dem strukturierten Claude-Format extrahieren
+	positionsRegex := regexp.MustCompile(`(?s)POSITIONEN:\s*\n(.*?)(?:\n\n|$)`)
+	positionsMatch := positionsRegex.FindStringSubmatch(responseText)
+	
+	if len(positionsMatch) > 1 {
+		// Einzelne Positionen suchen
+		lineItemsText := positionsMatch[1]
+		lineItemRegex := regexp.MustCompile(`(?m)^\d+\.\s+(.+?),\s+(\d+(?:\.\d+)?)\s*×\s*(\d+(?:[,.]\d+)?)\s*€?\s*=\s*(\d+(?:[,.]\d+)?)\s*€?`)
+		lineItemMatches := lineItemRegex.FindAllStringSubmatch(lineItemsText, -1)
+		
+		for _, match := range lineItemMatches {
+			if len(match) >= 5 {
+				item := LineItem{
+					Description: match[1],
+					Quantity:    match[2],
+					UnitPrice:   match[3] + " €",
+					TotalPrice:  match[4] + " €",
+				}
+				result.LineItems = append(result.LineItems, item)
+			}
+		}
+		
+		logrus.Infof("Extrahierte Rechnungspositionen: %d", len(result.LineItems))
+	} else {
+		// Fallback zur allgemeinen Extraktion
+		result.LineItems = ExtractLineItems(responseText)
+	}
+
+	return result, nil
+}

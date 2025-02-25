@@ -1,0 +1,17 @@
+issuer: Generic Invoice
+fields:
+  amount: total|sum|amount|Total|Summe|Betrag|Gesamtbetrag|Gesamtsumme
+  amount_with_tax: (?:total|sum|amount|Total|Summe|Betrag|Gesamtbetrag|Gesamtsumme)[^\n]*?([\d.,]+)
+  date: \d{2}[\/\.\-]\d{2}[\/\.\-](?:20)?(?:\d{2})
+  date_format: '%d.%m.%Y'
+  invoice_number: (?:invoice|rechnung|beleg|receipt)(?:\s+)?(?:number|nummer|nr\.?|no\.?)(?:[\:|\s+|]+)([a-zA-Z0-9\-]+)
+keywords:
+  - invoice
+  - rechnung
+  - quittung
+  - beleg
+  - receipt
+options:
+  languages:
+    - de
+    - en

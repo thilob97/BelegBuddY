@@ -1,0 +1,15 @@
+issuer: Beispiel GmbH
+fields:
+  amount: Gesamtbetrag \d+\.\d+
+  amount_with_tax: Gesamtbetrag\s+(\d+.\d+)
+  date: \d{2}\.\d{2}\.\d{4}
+  date_format: '%d.%m.%Y'
+  invoice_number: Rechnungsnummer\s+(\w+[\d-]+)
+keywords:
+  - Beispielrechnung
+  - Musterrechnung
+  - Rechnung
+options:
+  languages:
+    - de
+  decimal_separator: '.'
