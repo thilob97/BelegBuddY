@@ -4,11 +4,8 @@ package ocr
 
 import (
 	"errors"
-	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
 	"github.com/otiai10/gosseract/v2"
 	"github.com/sirupsen/logrus"
