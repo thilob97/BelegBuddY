@@ -81,8 +81,16 @@ func GetInvoiceByID(id uint) (*models.Invoice, error) {
 
 // SaveInvoice speichert eine erkannte Rechnung in der Datenbank
 func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
+	// Debug-Ausgaben
+	logrus.WithFields(logrus.Fields{
+		"date":         date,
+		"amount":       amount,
+		"supplierName": supplierName,
+		"filePath":     filePath,
+	}).Info("Speichere Rechnung")
+
 	// OCR-Ergebnis für die Positionsextraktion
-	result := ocr.OCRResult{
+	ocrResult := ocr.OCRResult{
 		FullText:     fullText,
 		PossibleDate: date,
 		PossibleSum:  amount,
@@ -143,13 +151,18 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 	}
 
 	// Konvertiere OCR LineItems in Datenbank InvoiceItems
-	if len(result.LineItems) > 0 {
-		for _, lineItem := range result.LineItems {
+	if len(ocrResult.LineItems) > 0 {
+		logrus.Infof("Gefundene LineItems: %d", len(ocrResult.LineItems))
+		for i, lineItem := range ocrResult.LineItems {
+			logrus.Infof("Verarbeite Position %d: %s", i+1, lineItem.Description)
+			
 			// Parse Menge und Preise
 			quantity := 1.0
 			if lineItem.Quantity != "" {
 				if q, err := parseAmount(lineItem.Quantity); err == nil {
 					quantity = q
+				} else {
+					logrus.Warnf("Fehler beim Parsen der Menge '%s': %s", lineItem.Quantity, err)
 				}
 			}
 			
@@ -158,6 +171,8 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 			if lineItem.UnitPrice != "" {
 				if up, err := parseAmount(lineItem.UnitPrice); err == nil {
 					unitPrice = up
+				} else {
+					logrus.Warnf("Fehler beim Parsen des Einzelpreises '%s': %s", lineItem.UnitPrice, err)
 				}
 			}
 			
@@ -166,6 +181,8 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 			if lineItem.TotalPrice != "" {
 				if tp, err := parseAmount(lineItem.TotalPrice); err == nil {
 					totalPrice = tp
+				} else {
+					logrus.Warnf("Fehler beim Parsen des Gesamtpreises '%s': %s", lineItem.TotalPrice, err)
 				}
 			}
 			
@@ -188,6 +205,7 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 				TotalPrice:  totalPrice,
 			}
 			
+			logrus.Infof("Speichere Position: %+v", invoiceItem)
 			if err := tx.Create(&invoiceItem).Error; err != nil {
 				tx.Rollback()
 				logrus.Error("Fehler beim Speichern der Rechnungsposition: ", err)
@@ -195,6 +213,7 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 			}
 		}
 	} else {
+		logrus.Info("Keine LineItems gefunden, erstelle Standardposition")
 		// Fallback: Erstelle eine Standardposition, wenn keine Positionen erkannt wurden
 		invoiceItem := models.InvoiceItem{
 			InvoiceID:   invoice.ID,
@@ -260,18 +279,36 @@ func parseDate(dateStr string) (time.Time, error) {
 
 // Hilfsfunktion zum Parsen von Geldbeträgen
 func parseAmount(amountStr string) (float64, error) {
+	// Debug-Ausgabe für Fehleranalyse
+	logrus.Debugf("parseAmount wird aufgerufen mit: '%s'", amountStr)
+	
 	// Entferne alle Zeichen außer Ziffern, Punkten und Kommas
 	sanitized := regexp.MustCompile(`[^0-9.,]`).ReplaceAllString(amountStr, "")
+	logrus.Debugf("Nach Entfernung von Sonderzeichen: '%s'", sanitized)
 	
 	// Ersetze Komma durch Punkt für die Konvertierung
 	sanitized = strings.Replace(sanitized, ",", ".", -1)
+	logrus.Debugf("Nach Ersetzung von Kommas: '%s'", sanitized)
+	
+	// Wenn der Wert leer ist, gib Fehler zurück
+	if sanitized == "" {
+		return 0.0, errors.New("leerer Betrag nach Bereinigung")
+	}
 	
 	// Wenn mehrere Punkte vorhanden sind, behalte nur den letzten
 	parts := strings.Split(sanitized, ".")
 	if len(parts) > 2 {
 		sanitized = strings.Join(parts[:len(parts)-1], "") + "." + parts[len(parts)-1]
+		logrus.Debugf("Nach Korrektur mehrerer Punkte: '%s'", sanitized)
 	}
 	
 	// Parse als float64
-	return strconv.ParseFloat(sanitized, 64)
+	result, err := strconv.ParseFloat(sanitized, 64)
+	if err != nil {
+		logrus.Warnf("Fehler beim Parsen des Betrags '%s': %s", sanitized, err)
+		return 0.0, err
+	}
+	
+	logrus.Debugf("Erfolgreich geparst: %.2f", result)
+	return result, nil
 }
