@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/belegbuddy/belegbuddy/internal/db"
 	"github.com/belegbuddy/belegbuddy/internal/ocr"
 	"github.com/belegbuddy/belegbuddy/ui/views"
 	"github.com/sirupsen/logrus"
@@ -85,6 +86,18 @@ func showOCRResultDialog(a *App, result *ocr.OCRResult, filePath string) {
 	supplierEntry := widget.NewEntry()
 	supplierEntry.SetText(result.Supplier)
 	
+	// Titel für den Dialog
+	title := "OCR-Ergebnis"
+	if result.IsDemo {
+		title = "Demo-Beispiel Ergebnis"
+	}
+	
+	// Info-Label
+	infoLabel := widget.NewLabel("OCR-Verarbeitung abgeschlossen")
+	if result.IsDemo {
+		infoLabel.SetText("Demo-Beispiel: Dies sind künstlich generierte Daten für Testzwecke")
+	}
+	
 	// Formular für extrahierte Daten
 	extractedForm := container.NewVBox(
 		container.NewGridWithColumns(2,
@@ -99,13 +112,25 @@ func showOCRResultDialog(a *App, result *ocr.OCRResult, filePath string) {
 	
 	// Button zum Speichern
 	saveButton := widget.NewButton("In Datenbank speichern", func() {
-		// Hier würden wir später die Daten in die Datenbank speichern
-		dialog.ShowInformation("Hinweis", "Speichern in Datenbank noch nicht implementiert", a.MainWindow)
+		err := db.SaveInvoice(
+			dateEntry.Text,
+			amountEntry.Text,
+			supplierEntry.Text,
+			textEntry.Text,
+			filePath,
+		)
+		
+		if err != nil {
+			dialog.ShowError(err, a.MainWindow)
+			return
+		}
+		
+		dialog.ShowInformation("Erfolg", "Rechnung wurde erfolgreich in der Datenbank gespeichert", a.MainWindow)
 	})
 	
 	// Vollständiges Layout
 	content := container.NewVBox(
-		widget.NewLabel("OCR-Verarbeitung abgeschlossen"),
+		infoLabel,
 		container.NewAppTabs(
 			container.NewTabItem("Extrahierte Daten", container.NewVBox(
 				container.NewPadded(extractedForm),
@@ -118,7 +143,7 @@ func showOCRResultDialog(a *App, result *ocr.OCRResult, filePath string) {
 	)
 	
 	// Dialog anzeigen
-	dialog.ShowCustom("OCR-Ergebnis", "Schließen", content, a.MainWindow)
+	dialog.ShowCustom(title, "Schließen", content, a.MainWindow)
 
 	// Log-Eintrag
 	logrus.Info("OCR-Ergebnis für Datei angezeigt: ", filePath)
