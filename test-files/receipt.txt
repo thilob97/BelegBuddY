@@ -1,0 +1,21 @@
+Beispiel GmbH
+Musterstraße 123
+12345 Musterstadt
+
+Rechnung Nr.: 2023-1234
+Rechnungsdatum: 15.02.2023
+Lieferant: Beispiel GmbH
+
+Pos.  Bezeichnung                  Anzahl     Einzelpreis     Gesamtpreis
+-------------------------------------------------------------------------------
+1     Produkt A                      2         59,99 €         119,98 €
+2     Dienstleistung B               3         45,00 €         135,00 €
+3     Produkt C                      1         84,50 €          84,50 €
+-------------------------------------------------------------------------------
+                                                Nettobetrag:    339,48 €
+                                                MwSt. 19%:       64,50 €
+                                                -------------------------
+                                                Gesamtbetrag:   403,98 €
+
+Zahlbar bis: 15.04.2023
+Bankverbindung: DE12 3456 7890 1234 5678 90
