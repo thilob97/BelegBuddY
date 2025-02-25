@@ -2,6 +2,7 @@ package db
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -129,6 +130,22 @@ func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 	if err := tx.Create(&invoice).Error; err != nil {
 		tx.Rollback()
 		logrus.Error("Fehler beim Speichern der Rechnung: ", err)
+		return err
+	}
+
+	// Einfache Rechnungsposition erstellen basierend auf dem erkannten Text
+	// In einer vollständigen Implementierung würden hier Positionen aus dem Text extrahiert
+	invoiceItem := models.InvoiceItem{
+		InvoiceID:   invoice.ID,
+		Description: fmt.Sprintf("Artikel aus Rechnung vom %s", date),
+		Quantity:    1.0,
+		SinglePrice: parsedAmount,
+		TotalPrice:  parsedAmount,
+	}
+
+	if err := tx.Create(&invoiceItem).Error; err != nil {
+		tx.Rollback()
+		logrus.Error("Fehler beim Speichern der Rechnungsposition: ", err)
 		return err
 	}
 
