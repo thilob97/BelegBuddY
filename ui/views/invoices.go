@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/belegbuddy/belegbuddy/internal/db"
+	"github.com/sirupsen/logrus"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -21,15 +25,46 @@ type InvoiceListItem struct {
 
 // NewInvoicesView erstellt die Rechnungsübersicht
 func NewInvoicesView() fyne.CanvasObject {
-	// Dummy-Daten für die Vorschau
-	// In der vollständigen Implementierung würden diese aus der Datenbank kommen
-	dummyData := []InvoiceListItem{
-		{ID: 1, Date: time.Now().AddDate(0, 0, -5), Supplier: "Beispiel GmbH", Amount: 120.50, Status: "Bezahlt"},
-		{ID: 2, Date: time.Now().AddDate(0, 0, -12), Supplier: "Muster AG", Amount: 450.75, Status: "Offen"},
+	// Leerer Container für die Detailansicht
+	detailContainer := container.NewVBox(
+		widget.NewLabel("Wählen Sie eine Rechnung aus, um Details anzuzeigen"),
+	)
+	
+	// Daten aus der Datenbank laden
+	var tableData []InvoiceListItem
+	invoices, err := db.GetAllInvoices()
+	if err != nil {
+		logrus.Error("Fehler beim Laden der Rechnungen: ", err)
+		// Fallback zu Dummy-Daten
+		tableData = []InvoiceListItem{
+			{ID: 1, Date: time.Now().AddDate(0, 0, -5), Supplier: "Beispiel GmbH", Amount: 120.50, Status: "Bezahlt"},
+			{ID: 2, Date: time.Now().AddDate(0, 0, -12), Supplier: "Muster AG", Amount: 450.75, Status: "Offen"},
+		}
+	} else {
+		// Daten aus der Datenbank in das ListItem-Format konvertieren
+		for _, invoice := range invoices {
+			tableData = append(tableData, InvoiceListItem{
+				ID:       invoice.ID,
+				Date:     invoice.Date,
+				Supplier: invoice.Supplier.Name,
+				Amount:   invoice.TotalAmount,
+				Status:   invoice.Status,
+			})
+		}
+		
+		if len(tableData) == 0 {
+			// Keine Daten in der Datenbank, Dummy-Daten anzeigen
+			tableData = []InvoiceListItem{
+				{ID: 0, Date: time.Now(), Supplier: "Keine Rechnungen vorhanden", Amount: 0, Status: "-"},
+			}
+		}
 	}
 	
 	// Tabelle erstellen
-	table := createInvoiceTable(dummyData)
+	table := createInvoiceTable(tableData, func(id uint) {
+		// Diese Funktion wird aufgerufen, wenn eine Rechnung ausgewählt wird
+		showInvoiceDetails(id, detailContainer)
+	})
 	
 	// Suchfeld
 	searchEntry := widget.NewEntry()
@@ -65,15 +100,22 @@ func NewInvoicesView() fyne.CanvasObject {
 		searchEntry,
 	)
 	
+	// Tabelle und Detailcontainer in Split-View
+	split := container.NewHSplit(
+		table,
+		container.NewPadded(detailContainer),
+	)
+	split.Offset = 0.4 // 40% für die Tabelle, 60% für die Details
+	
 	return container.NewBorder(
 		container.NewPadded(headerContainer),
 		nil, nil, nil,
-		table,
+		split,
 	)
 }
 
 // createInvoiceTable erstellt eine Tabelle mit Rechnungsdaten
-func createInvoiceTable(data []InvoiceListItem) *widget.Table {
+func createInvoiceTable(data []InvoiceListItem, onSelect func(id uint)) *widget.Table {
 	table := widget.NewTable(
 		// Callback für Anzahl Zeilen/Spalten
 		func() (int, int) {
@@ -119,7 +161,7 @@ func createInvoiceTable(data []InvoiceListItem) *widget.Table {
 				case 3:
 					label.SetText(item.Status)
 				case 4:
-					label.SetText("Bearbeiten")
+					label.SetText("Details")
 				}
 			}
 		},
@@ -132,10 +174,196 @@ func createInvoiceTable(data []InvoiceListItem) *widget.Table {
 	table.SetColumnWidth(3, 120)
 	table.SetColumnWidth(4, 120)
 	
+	// Zeilen auswählbar machen
+	table.OnSelected = func(id widget.TableCellID) {
+		// Ignoriere Klicks auf die Kopfzeile
+		if id.Row == 0 {
+			return
+		}
+		
+		// Rufe die übergebene Funktion mit der Rechnungs-ID auf
+		dataIndex := id.Row - 1
+		if dataIndex < len(data) {
+			invoiceID := data[dataIndex].ID
+			onSelect(invoiceID)
+		}
+		
+		// Setze die Auswahl zurück (optional, je nach gewünschtem Verhalten)
+		table.UnselectAll()
+	}
+	
 	return table
 }
 
 // formatAmount formatiert einen Betrag als Währungsangabe
 func formatAmount(amount float64) string {
 	return fmt.Sprintf("%.2f €", amount)
+}
+
+// showInvoiceDetails zeigt die Details einer Rechnung in einem Container an
+func showInvoiceDetails(invoiceID uint, detailContainer *fyne.Container) {
+	// Container leeren
+	detailContainer.RemoveAll()
+	
+	if invoiceID == 0 {
+		detailContainer.Add(widget.NewLabel("Keine Rechnung ausgewählt"))
+		detailContainer.Refresh()
+		return
+	}
+	
+	// Lade die Rechnungsdetails aus der Datenbank
+	invoice, err := db.GetInvoiceByID(invoiceID)
+	if err != nil {
+		detailContainer.Add(widget.NewLabel("Fehler beim Laden der Rechnungsdetails: " + err.Error()))
+		detailContainer.Refresh()
+		return
+	}
+	
+	// Hauptinfos anzeigen
+	title := widget.NewLabelWithStyle(
+		fmt.Sprintf("Rechnung #%d - %s", invoice.ID, invoice.Supplier.Name),
+		fyne.TextAlignLeading,
+		fyne.TextStyle{Bold: true},
+	)
+	
+	// Infokarte mit allgemeinen Daten
+	infoGrid := container.NewGridWithColumns(2,
+		widget.NewLabelWithStyle("Lieferant:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.Supplier.Name),
+		
+		widget.NewLabelWithStyle("Adresse:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.Supplier.Address),
+		
+		widget.NewLabelWithStyle("Rechnungsdatum:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.Date.Format("02.01.2006")),
+		
+		widget.NewLabelWithStyle("Fälligkeitsdatum:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.DueDate.Format("02.01.2006")),
+		
+		widget.NewLabelWithStyle("Gesamtbetrag:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(formatAmount(invoice.TotalAmount)),
+		
+		widget.NewLabelWithStyle("MwSt-Betrag:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(formatAmount(invoice.VatAmount)),
+		
+		widget.NewLabelWithStyle("Status:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.Status),
+		
+		widget.NewLabelWithStyle("Kategorie:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		widget.NewLabel(invoice.Category),
+	)
+	
+	// Rechnungspositionen als Tabelle
+	var itemsTable *widget.Table
+	
+	if len(invoice.InvoiceItems) > 0 {
+		itemsTable = widget.NewTable(
+			// Anzahl Zeilen und Spalten
+			func() (int, int) {
+				return len(invoice.InvoiceItems) + 1, 4 // +1 für Kopfzeile
+			},
+			// Zellenelement
+			func() fyne.CanvasObject {
+				return widget.NewLabel("Template")
+			},
+			// Zellinhalt
+			func(id widget.TableCellID, obj fyne.CanvasObject) {
+				label := obj.(*widget.Label)
+				
+				// Kopfzeile
+				if id.Row == 0 {
+					label.TextStyle = fyne.TextStyle{Bold: true}
+					switch id.Col {
+					case 0:
+						label.SetText("Beschreibung")
+					case 1:
+						label.SetText("Menge")
+					case 2:
+						label.SetText("Einzelpreis")
+					case 3:
+						label.SetText("Gesamtpreis")
+					}
+					return
+				}
+				
+				// Inhalt
+				item := invoice.InvoiceItems[id.Row-1]
+				switch id.Col {
+				case 0:
+					label.SetText(item.Description)
+				case 1:
+					label.SetText(fmt.Sprintf("%.2f", item.Quantity))
+				case 2:
+					label.SetText(formatAmount(item.SinglePrice))
+				case 3:
+					label.SetText(formatAmount(item.TotalPrice))
+				}
+			},
+		)
+		
+		// Spaltenbreiten
+		itemsTable.SetColumnWidth(0, 300)
+		itemsTable.SetColumnWidth(1, 80)
+		itemsTable.SetColumnWidth(2, 120)
+		itemsTable.SetColumnWidth(3, 120)
+	} else {
+		itemsTable = nil
+	}
+	
+	// Dateireferenzen
+	var fileInfos []string
+	for _, fileRef := range invoice.FileRefs {
+		fileInfos = append(fileInfos, fileRef.Filename)
+	}
+	
+	// Aktionen
+	deleteButton := widget.NewButtonWithIcon("Löschen", theme.DeleteIcon(), func() {
+		// Bestätigungsdialog mit Fenster-Kontext
+		dialog.ShowConfirm(
+			"Rechnung löschen",
+			"Möchten Sie die Rechnung wirklich löschen?",
+			func(confirm bool) {
+				if confirm {
+					// TODO: Implementierung zum Löschen der Rechnung
+					logrus.Info("Rechnung mit ID ", invoice.ID, " soll gelöscht werden")
+				}
+			},
+			fyne.CurrentApp().Driver().AllWindows()[0],
+		)
+	})
+	
+	editButton := widget.NewButtonWithIcon("Bearbeiten", theme.DocumentCreateIcon(), func() {
+		// TODO: Implementierung zum Bearbeiten der Rechnung
+		logrus.Info("Rechnung mit ID ", invoice.ID, " soll bearbeitet werden")
+	})
+	
+	actionsContainer := container.NewHBox(
+		editButton,
+		deleteButton,
+	)
+	
+	// Zusammenstellen der Komponenten
+	detailContainer.Add(title)
+	detailContainer.Add(widget.NewSeparator())
+	detailContainer.Add(container.NewPadded(infoGrid))
+	
+	if len(invoice.InvoiceItems) > 0 {
+		detailContainer.Add(widget.NewLabelWithStyle("Rechnungspositionen:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+		detailContainer.Add(container.NewPadded(itemsTable))
+	} else {
+		detailContainer.Add(widget.NewLabelWithStyle("Keine Rechnungspositionen vorhanden", fyne.TextAlignLeading, fyne.TextStyle{Italic: true}))
+	}
+	
+	if len(fileInfos) > 0 {
+		detailContainer.Add(widget.NewLabelWithStyle("Dateien:", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}))
+		for _, fileInfo := range fileInfos {
+			detailContainer.Add(widget.NewLabel(fileInfo))
+		}
+	}
+	
+	detailContainer.Add(widget.NewSeparator())
+	detailContainer.Add(actionsContainer)
+	
+	// Container aktualisieren
+	detailContainer.Refresh()
 }

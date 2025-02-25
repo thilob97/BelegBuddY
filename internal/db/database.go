@@ -50,6 +50,33 @@ func GetDB() *gorm.DB {
 	return DB
 }
 
+// GetAllInvoices gibt alle Rechnungen aus der Datenbank zurück
+func GetAllInvoices() ([]models.Invoice, error) {
+	var invoices []models.Invoice
+	result := DB.Preload("Supplier").Find(&invoices)
+	if result.Error != nil {
+		logrus.Error("Fehler beim Abrufen der Rechnungen: ", result.Error)
+		return nil, result.Error
+	}
+	return invoices, nil
+}
+
+// GetInvoiceByID gibt eine Rechnung mit allen Details zurück
+func GetInvoiceByID(id uint) (*models.Invoice, error) {
+	var invoice models.Invoice
+	result := DB.Preload("Supplier").
+		Preload("InvoiceItems").
+		Preload("FileRefs").
+		First(&invoice, id)
+	
+	if result.Error != nil {
+		logrus.Error("Fehler beim Abrufen der Rechnung mit ID ", id, ": ", result.Error)
+		return nil, result.Error
+	}
+	
+	return &invoice, nil
+}
+
 // SaveInvoice speichert eine erkannte Rechnung in der Datenbank
 func SaveInvoice(date, amount, supplierName, fullText, filePath string) error {
 	// Validierung
